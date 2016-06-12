@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+
+import re
+import sys
+import json
+import itertools
+import subprocess
+from urllib.request import Request
+from urllib.request import urlopen
+
+
+WEB_HOOK = '{data}'
+WEB_HOOK_TMPL = re.compile("^WEB_HOOK = '.*'$", flags=re.MULTILINE)
+
+CODE_EXECUTE_FAILED = 255
+
+
+def current_command():
+    return sys.argv[0] or 'bcrun'
+
+
+def show_help():
+    USAGE = (
+        'Usage: {command} {{your-command}}\n'
+    ).format(
+        command=current_command()
+    )
+
+    sys.stderr.write(USAGE)
+
+
+def show_web_hook_install_required():
+    note = (
+        'bearychat web hook has not beed setup yet, '
+        'use `{command} --install {{web_hook}} > bcrun` to install\n'
+    ).format(
+        command=current_command()
+    )
+
+    sys.stderr.write(note)
+
+
+def install_webhook(args):
+    new_webhook = args[0]
+    with open(sys.argv[0], 'r') as f:
+        content = re.sub(
+            WEB_HOOK_TMPL,
+            "WEB_HOOK = '{}'".format(new_webhook),
+            f.read()
+        )
+
+    sys.stdout.write(content)
+
+
+def as_output(output):
+    if isinstance(output, bytes):
+        output = str(output, encoding='u8')
+    return output or '***empty***'
+
+
+def report_command_result(command, returncode,
+                          stdout=None, stderr=None,
+                          include_output=False):
+    if WEB_HOOK == '{data}':
+        show_web_hook_install_required()
+        return
+
+    headers = {
+        'Content-Type': 'application/json',
+    }
+
+    payload = {
+        'text': '**bcrun**',
+        'attachments': [
+            {
+                'title': 'command',
+                'text': '`{}`'.format(' '.join(command)),
+            },
+            {
+                'title': 'status',
+                'text': '{}'.format(returncode),
+            },
+        ],
+    }
+
+    if returncode != 0 or include_output:
+        payload['attachments'].append({
+            'title': 'stdout',
+            'text': as_output(stdout),
+        })
+        payload['attachments'].append({
+            'title': 'stderr',
+            'text': as_output(stderr),
+            'color': '#ffb39a',
+        })
+
+    data = json.dumps(payload).encode('u8')
+
+    req = Request(WEB_HOOK, headers=headers, data=data)
+    urlopen(req)
+
+
+def execute_command(command, **kwargs):
+    try:
+        rv = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+
+        if rv.stdout:
+            sys.stdout.buffer.write(rv.stdout)
+        if rv.stderr:
+            sys.stderr.buffer.write(rv.stderr)
+
+        report_command_result(command, rv.returncode, rv.stdout, rv.stderr,
+                              **kwargs)
+
+        sys.exit(rv.returncode)
+    except Exception as e:
+        err = str(e)
+        sys.stderr.write(err + '\n')
+        report_command_result(command, CODE_EXECUTE_FAILED, stderr=err,
+                              **kwargs)
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        return show_help()
+
+    command = list(itertools.dropwhile(lambda x: x.startswith('--'), args))
+    bcrun_args = list(itertools.takewhile(lambda x: x.startswith('--'), args))
+
+    if '--install' in bcrun_args:
+        return install_webhook(command)
+    else:
+        return execute_command(
+            command,
+            include_output='--include-output' in bcrun_args
+        )
+
+
+if __name__ == '__main__':
+    main()
